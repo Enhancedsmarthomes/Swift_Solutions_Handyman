@@ -9,6 +9,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,400;0,500;0,600;0,700;0,800;0,900&display=swap" rel="stylesheet">
 <script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
   tailwind.config = {
     theme: {
@@ -645,6 +646,19 @@
       <p class="flex items-center gap-2">
         &copy; <span id="year"></span> Swift Solutions Handyman. All rights reserved.
         <button id="secret-admin-btn" class="secret-admin-dot w-2 h-2 rounded-full bg-white/10 hover:bg-white/30" aria-label="Site admin" title=""></button>
+
+<!-- Admin passcode modal -->
+<div id="admin-pass-backdrop" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:9999;display:flex;align-items:center;justify-content:center;" hidden>
+  <div style="background:#1e293b;border:1px solid rgba(255,255,255,0.12);border-radius:14px;padding:2rem;width:320px;box-shadow:0 24px 60px rgba(0,0,0,0.5);">
+    <p style="color:#fff;font-weight:700;font-size:1rem;margin-bottom:1rem;">Admin Passcode</p>
+    <input id="admin-pass-input" type="password" placeholder="Enter passcode…"
+      style="width:100%;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);border-radius:8px;color:#fff;padding:0.65rem 1rem;font-size:0.9rem;outline:none;margin-bottom:1rem;" />
+    <div style="display:flex;gap:0.75rem;justify-content:flex-end;">
+      <button id="admin-pass-cancel" style="background:transparent;border:1px solid rgba(255,255,255,0.2);color:rgba(255,255,255,0.6);border-radius:7px;padding:0.5rem 1rem;cursor:pointer;font-size:0.85rem;">Cancel</button>
+      <button id="admin-pass-submit" style="background:#f59e0b;border:none;color:#1e293b;border-radius:7px;padding:0.5rem 1.1rem;cursor:pointer;font-weight:700;font-size:0.85rem;">Enter</button>
+    </div>
+  </div>
+</div>
       </p>
       <p>Reliable &bull; Local &bull; Professional</p>
     </div>
@@ -681,32 +695,51 @@
 <!-- ================= REVIEWS ENGINE ================= -->
 <script>
 (function () {
-  const STORAGE_KEY = 'ssh_reviews_v2';
-  const ADMIN_PASSCODE = 'swift2024';
+  const SUPABASE_URL = 'https://kmrexqmzobqxncziwcer.supabase.co';
+  const SUPABASE_KEY = 'sb_publishable_w7Mqj1o7iUMn_wbAIcIcyA_ydIPfoN3';
+  const ADMIN_EMAIL = 'swiftsolutionshandyman85@gmail.com';
+  const TABLE = 'reviews_text';
+
+  const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
   const STAR_PATH = '<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>';
 
   let adminMode = false;
   let selectedRating = 0;
   let pendingPhotos = [null, null, null, null];
+  let reviews = [];
 
-  function loadReviews() {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) return JSON.parse(raw);
-    } catch (e) {}
-    return [];
+  function formatDate(isoString) {
+    const d = new Date(isoString);
+    const diffMs = Date.now() - d.getTime();
+    const diffDays = Math.floor(diffMs / 86400000);
+    if (diffDays <= 0) return 'Today';
+    if (diffDays === 1) return 'Yesterday';
+    if (diffDays < 30) return `${diffDays} days ago`;
+    const months = Math.floor(diffDays / 30);
+    if (months < 12) return `${months} month${months > 1 ? 's' : ''} ago`;
+    const years = Math.floor(months / 12);
+    return `${years} year${years > 1 ? 's' : ''} ago`;
   }
 
-  function saveReviews(reviews) {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(reviews));
-    } catch (e) {
-      showToast("Couldn't save review — storage is full.");
+  async function fetchReviews() {
+    const { data, error } = await sb
+      .from(TABLE)
+      .select('*')
+      .order('created_at', { ascending: false });
+    if (error) {
+      showToast("Couldn't load reviews — check your connection.");
+      return [];
     }
+    return data.map(row => ({
+      id: row.id,
+      name: row.name,
+      rating: row.rating,
+      text: row.review,
+      images: row.images || [],
+      date: formatDate(row.created_at)
+    }));
   }
-
-  let reviews = loadReviews();
 
   function starsMarkup(rating, size) {
     let html = '';
@@ -799,15 +832,20 @@
   });
 
   // ---------- Admin delete ----------
-  track.addEventListener('click', (e) => {
+  track.addEventListener('click', async (e) => {
     const btn = e.target.closest('.admin-delete-btn');
     if (!btn) return;
     const id = btn.dataset.id;
-    const target = reviews.find(r => r.id === id);
+    const target = reviews.find(r => r.id == id);
     if (!target) return;
     if (!confirm(`Delete this review from ${target.name}?`)) return;
-    reviews = reviews.filter(r => r.id !== id);
-    saveReviews(reviews);
+
+    const { error } = await sb.from(TABLE).delete().eq('id', id);
+    if (error) {
+      showToast("Couldn't delete — try signing into admin mode again.");
+      return;
+    }
+    reviews = reviews.filter(r => r.id != id);
     renderReviews();
     showToast('Review deleted.');
   });
@@ -827,22 +865,50 @@
   }
 
   // ---------- Secret admin ----------
-  document.getElementById('secret-admin-btn').addEventListener('click', () => {
+  const adminBackdrop = document.getElementById('admin-pass-backdrop');
+  const adminInput    = document.getElementById('admin-pass-input');
+
+  function openAdminModal() {
+    adminInput.value = '';
+    adminBackdrop.hidden = false;
+    adminBackdrop.style.display = 'flex';
+    setTimeout(() => adminInput.focus(), 50);
+  }
+  function closeAdminModal() {
+    adminBackdrop.hidden = true;
+    adminBackdrop.style.display = 'none';
+    adminInput.value = '';
+  }
+
+  document.getElementById('admin-pass-cancel').addEventListener('click', closeAdminModal);
+  adminBackdrop.addEventListener('click', e => { if (e.target === adminBackdrop) closeAdminModal(); });
+
+  async function submitAdminPass() {
+    const code = adminInput.value.trim();
+    if (!code) return;
+    closeAdminModal();
+    const { error } = await sb.auth.signInWithPassword({ email: ADMIN_EMAIL, password: code });
+    if (error) {
+      showToast('Incorrect passcode.');
+      return;
+    }
+    adminMode = true;
+    renderReviews();
+    showToast('Admin mode on — click the red icon on a review to delete it.');
+  }
+
+  document.getElementById('admin-pass-submit').addEventListener('click', submitAdminPass);
+  adminInput.addEventListener('keydown', e => { if (e.key === 'Enter') submitAdminPass(); });
+
+  document.getElementById('secret-admin-btn').addEventListener('click', async () => {
     if (adminMode) {
+      await sb.auth.signOut();
       adminMode = false;
       renderReviews();
       showToast('Admin mode off.');
       return;
     }
-    const code = prompt('Enter admin passcode:');
-    if (code === null) return;
-    if (code === ADMIN_PASSCODE) {
-      adminMode = true;
-      renderReviews();
-      showToast('Admin mode on — click the red icon on a review to delete it.');
-    } else {
-      showToast('Incorrect passcode.');
-    }
+    openAdminModal();
   });
 
   // ---------- Review modal ----------
@@ -906,23 +972,51 @@
     bindPhotoInput(slot.querySelector('.review-photo-input'));
   }
 
+  function resizeImage(file, maxDim, quality) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+          let { width, height } = img;
+          if (width > maxDim || height > maxDim) {
+            if (width > height) { height = Math.round(height * maxDim / width); width = maxDim; }
+            else { width = Math.round(width * maxDim / height); height = maxDim; }
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+          resolve(canvas.toDataURL('image/jpeg', quality));
+        };
+        img.onerror = reject;
+        img.src = e.target.result;
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
   function bindPhotoInput(input) {
     input.addEventListener('change', () => {
       const file = input.files[0];
       if (!file) return;
       const index = parseInt(input.dataset.index, 10);
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        pendingPhotos[index] = e.target.result;
-        const slot = document.querySelector(`.review-photo-slot[data-index="${index}"]`);
+      const slot = document.querySelector(`.review-photo-slot[data-index="${index}"]`);
+      slot.classList.add('opacity-50');
+      resizeImage(file, 1000, 0.72).then((dataUrl) => {
+        pendingPhotos[index] = dataUrl;
+        slot.classList.remove('opacity-50');
         slot.classList.add('has-photo');
         slot.innerHTML = `
-          <img src="${e.target.result}" class="w-full h-full object-cover">
+          <img src="${dataUrl}" class="w-full h-full object-cover">
           <button type="button" class="remove-photo-btn absolute top-1 right-1 w-6 h-6 rounded-full bg-charcoal-700/80 text-white flex items-center justify-center" data-index="${index}" aria-label="Remove photo">
             <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </button>`;
-      };
-      reader.readAsDataURL(file);
+      }).catch(() => {
+        slot.classList.remove('opacity-50');
+        showToast("Couldn't load that photo — try a different one.");
+      });
     });
   }
 
@@ -943,7 +1037,7 @@
     errorEl.classList.add('hidden');
   }
 
-  form.addEventListener('submit', (e) => {
+  form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const name = document.getElementById('review-name').value.trim();
     const text = document.getElementById('review-text').value.trim();
@@ -955,16 +1049,34 @@
     }
 
     const images = pendingPhotos.filter(Boolean);
+    const submitBtn = form.querySelector('button[type="submit"]');
+    submitBtn.disabled = true;
+    submitBtn.classList.add('opacity-60');
+
+    const { data, error } = await sb
+      .from(TABLE)
+      .insert({ name, rating: selectedRating, review: text, images })
+      .select()
+      .single();
+
+    submitBtn.disabled = false;
+    submitBtn.classList.remove('opacity-60');
+
+    if (error) {
+      errorEl.textContent = "Your review couldn't be submitted — please check your connection and try again.";
+      errorEl.classList.remove('hidden');
+      return;
+    }
 
     reviews.unshift({
-      id: 'r' + Date.now(),
-      name,
-      rating: selectedRating,
-      date: 'Just now',
-      text,
-      images
+      id: data.id,
+      name: data.name,
+      rating: data.rating,
+      text: data.review,
+      images: data.images || [],
+      date: 'Just now'
     });
-    saveReviews(reviews);
+
     renderReviews();
     closeModal();
     resetForm();
@@ -972,7 +1084,12 @@
     track.scrollTo({ left: 0, behavior: 'smooth' });
   });
 
-  renderReviews();
+  (async function init() {
+    const { data: { session } } = await sb.auth.getSession();
+    adminMode = !!session;
+    reviews = await fetchReviews();
+    renderReviews();
+  })();
 })();
 </script>
 </body>
